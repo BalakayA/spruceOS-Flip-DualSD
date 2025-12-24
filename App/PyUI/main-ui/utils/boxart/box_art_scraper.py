@@ -12,8 +12,6 @@ from devices.device import Device
 from display.display import Display
 from games.utils.box_art_resizer import BoxArtResizer
 from utils.logger import PyUiLogger
-import re
-from typing import Optional
 
 class BoxArtScraper:
     # optional abbreviation mapping
@@ -37,14 +35,29 @@ class BoxArtScraper:
     """
 
     def __init__(self):
-        self.base_dir = "/mnt/SDCARD"
-        self.roms_dir = Device.get_roms_dir()
+        # Identify valid Roms directories on both SD cards
+        self.search_roots = ["/mnt/SDCARD", "/media/sdcard1"]
+        self.rom_dirs = []
+
+        for root in self.search_roots:
+            rom_path = os.path.join(root, "Roms")
+            if os.path.exists(rom_path):
+                self.rom_dirs.append(rom_path)
+                PyUiLogger.get_logger().info(f"BoxArtScraper: Found ROMs directory at {rom_path}")
+
+        # Fallback: Ensure Device default is included if it wasn't caught above
+        default_roms = Device.get_roms_dir()
+        if default_roms and default_roms not in self.rom_dirs and os.path.exists(default_roms):
+            self.rom_dirs.append(default_roms)
+
         script_dir = Path(__file__).resolve().parent.parent.parent.parent
-        self.db_dir = os.path.join(script_dir,"boxartdb")
+        self.db_dir = os.path.join(script_dir, "boxartdb")
         PyUiLogger.get_logger().info(f"BoxArtScraper: Using boxart db directory at {self.db_dir}")
+        
         self.game_system_utils = Device.get_game_system_utils()
         self.preferred_region = Device.get_system_config().get_preferred_region()
         self._cache = {}  # sys_name -> list of (filename, token_set)
+
     # ==========================================================
     # Helper Methods
     # ==========================================================
@@ -278,12 +291,13 @@ class BoxArtScraper:
 
         # Shortest filename tie-breaker
         return min(best_candidates, key=len)
+
     # ==========================================================
     # Main Scraper Logic
     # ==========================================================
     
     # Function to process a single ROM file
-    def process_rom(self,sys_name, ra_name, root, file):
+    def process_rom(self, sys_name, ra_name, root, file):
                 
         if not os.path.exists(os.path.join(root, "Imgs")):
             os.makedirs(os.path.join(root, "Imgs"), exist_ok=True)
@@ -391,11 +405,16 @@ class BoxArtScraper:
         time.sleep(2)
         BoxArtResizer.patch_boxart_list(downloaded_files)
 
-
-    def get_scrape_tasks_for_system(self, sys_dir: str) -> List[tuple]:
+    def get_scrape_tasks_for_system(self, sys_path: str) -> List[tuple]:
+        """
+        Generates scrape tasks for a system folder.
+        Requires full sys_path (e.g. /media/sdcard1/Roms/GBA)
+        """
         tasks = []
 
-        sys_path = os.path.join(self.roms_dir, sys_dir)
+        if not os.path.exists(sys_path):
+            return tasks
+
         sys_name = os.path.basename(sys_path)
 
         ra_name = self.get_ra_alias(sys_name)
@@ -450,13 +469,21 @@ class BoxArtScraper:
             return
         
         tasks = []
-        # First, collect all ROM files for all systems
-        for sys_dir in [d for d in os.listdir(self.roms_dir) if os.path.isdir(os.path.join(self.roms_dir, d))]:
-            tasks.extend(self.get_scrape_tasks_for_system(sys_dir))
+        
+        # Iterate over all detected ROM roots (mnt/SDCARD and media/sdcard1)
+        for rom_root in self.rom_dirs:
+            if not os.path.exists(rom_root):
+                continue
+                
+            # List directories in this specific ROM root
+            for sys_dir in os.listdir(rom_root):
+                full_sys_path = os.path.join(rom_root, sys_dir)
+                
+                if os.path.isdir(full_sys_path):
+                    # Pass the full path to ensure we scan the correct location
+                    tasks.extend(self.get_scrape_tasks_for_system(full_sys_path))
 
         self.run_scraper_tasks(max_workers, tasks)
-        
-
 
     # ==========================================================
     # File Download
